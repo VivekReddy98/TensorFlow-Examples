@@ -11,7 +11,11 @@
 
 ## What are TFRecords
 
-TF Records are Tensorflow's recommended and own binary storage format. When the training datasets are large, using TF Records would lead to a much better performance in feeding data to the model and thus leading to shorter training times. More about this on [Tensorflow.org](https://www.tensorflow.org/tutorials/load_data/tfrecord)
+Pre-Req's: This Tutorial requires basic understanding of Tensorflow (Not Keras) (Eg: Session, Tensor, Placeholder, Variable, Operation)
+
+TF Records are Tensorflow's recommended and own binary storage format. When the training datasets are large, using TF Records would lead to a much better performance as it optimizes the usual bottleneck in the Training Phase i.e. feeding data to the model and thus leading to shorter training times. 
+
+More about this on [Tensorflow.org](https://www.tensorflow.org/tutorials/load_data/tfrecord)
 
 References to Well-written articles on TFRecords:
 1. http://warmspringwinds.github.io/tensorflow/tf-slim/2016/12/21/tfrecords-guide/
@@ -25,7 +29,7 @@ This was the source of reference on how i choose to approach the problem [Link:]
 
 ![Data Pipeline](DataPipeline.png)
 
-So, I planned to convert each of the videos (FRMS*X*Y*3) into (FRMS*2048). I've fed these videos to Pre-trained Inception V3 through a single step of forward propagation. Then, I've saved them as tfrecord format and these tfrecord files are used for training phase by the LSTM Network.
+So, I planned to convert each of the videos (FRMS,X,Y,3) into (FRMS,2048). I've ran these videos through Pre-trained Inception V3 for a single step of forward propagation. Then, I've saved them in .tfrecord format and these files are used in the training phase by the LSTM Network.
 
 ## Creating TFRecords
 
@@ -129,21 +133,7 @@ class TfRecordDecoder:
         self.NUMFRAMES = NUMFRAMES
         self.vector_size = 2048
 
-    # Can Feed this Iterator to Training # https://github.com/tensorflow/tensorflow/issues/30646
-    def _make_batch_iterator(self, tfrecord_files: List[str], batch_size, num_epochs, buffer_size):
-        
-        dataset = tf.data.TFRecordDataset(tfrecord_files, compression_type="GZIP") # Create a DataSet Object from TFRecord files
-        # Shuffle as the name suggests shuffles the Data Before Training, although for perfect shuffling would 
-        # require bufer_size to be full_size of the dataset, You could also set num_epochs
-        # Ref: https://www.tensorflow.org/api_docs/python/tf/data/experimental/shuffle_and_repeat
-        dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=buffer_size, count=num_epochs))
-        dataset = dataset.map(self.decode_tfrecord, 4)  # Apply a function to every record.
-        dataset = dataset.apply(tf.data.experimental.unbatch()) # Since, Every Record is 3 examples in my use case, i had to unbatch first
-        dataset = dataset.batch(batch_size) # Choose a Batch_size for Training
-        dataset = dataset.prefetch(5) # DataSet Would improves Latency, and would somewhat mitigate GPU Starvation Problem
-        return dataset
-
-    def decode_tfrecord(self, serialized_example):
+     def decode_tfrecord(self, serialized_example):
 
         # Note: All these Would be Tensors at this point and as such you may not be able to use Numpy or any Python Native Constructs.
         parsed_data = tf.parse_single_example(serialized_example, features={
@@ -170,9 +160,35 @@ class TfRecordDecoder:
 
         return image, annotation
 
+    # Can Feed this Iterator to Training # https://github.com/tensorflow/tensorflow/issues/30646
+    def _make_batch_iterator(self, tfrecord_files: List[str], batch_size, num_epochs, buffer_size):
+        
+        dataset = tf.data.TFRecordDataset(tfrecord_files, compression_type="GZIP") # Create a DataSet Object from TFRecord files
+        # Shuffle as the name suggests shuffles the Data Before Training, although for perfect shuffling would 
+        # require bufer_size to be full_size of the dataset, You could also set num_epochs
+        # Ref: https://www.tensorflow.org/api_docs/python/tf/data/experimental/shuffle_and_repeat
+        dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=buffer_size, count=num_epochs))
+        
+        # Apply a function to every record.
+        dataset = dataset.map(self.decode_tfrecord, 4)
+
+        # Since, Every Record is 3 examples in my use case, i had to unbatch first
+        dataset = dataset.apply(tf.data.experimental.unbatch())
+
+        # Choose a Batch_size for Training
+        dataset = dataset.batch(batch_size) 
+
+        # Prefetching would improve Latency, and might somewhat mitigate GPU Starvation Problem
+        dataset = dataset.prefetch(5) 
+        return dataset
+
+   
+
 ```
 
 ## Using TFRecords in a Keras Training Pipeline
+
+The below shown snippet is one way, where i was able to get the Pipeline running.
 
 ```python
 # Model Definition
@@ -206,12 +222,14 @@ if __name__ == "__main__":
 
     train_iterator = tf.data.Iterator.from_structure((tf.float32, tf.int8), (tf.TensorShape([None, FRAME_COUNT_PER_EXAMPLE, 2048]), 
                                                                                                     tf.TensorShape([None, 2])))
-    data_initializer_train_op = train_iterator.make_initializer(dataset_train)  # Returns a tf.Operation that initializes this iterator on dataset. 
+    # Returns a tf.Operation that initializes this iterator on the dataset.                                                                                                          
+    data_initializer_train_op = train_iterator.make_initializer(dataset_train)  
 
     # Setup input and output placeholders
     (input_train, labels_train) = train_iterator.get_next()
-    labels_train = tf.dtypes.cast(labels_train, tf.float32) # Cost Function Requires Pred & Orig Vectors to be of Same Datatype
 
+    # Cost Function Requires Pred & Orig Vectors to be of Same Datatype
+    labels_train = tf.dtypes.cast(labels_train, tf.float32)
     sess.run([data_initializer_train_op) # Initialize the Iterator.
 
     # Initialize the model
